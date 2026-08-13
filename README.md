@@ -6,7 +6,7 @@ All document and compliance status is based only on data entered by users. Desti
 
 ## Deployment status
 
-The production configuration is ready for Render, but this workspace is not connected to a Git host or Render account, so no public deployment has been created yet. See [DEPLOYMENT.md](DEPLOYMENT.md) for the exact runbook. Replace this section with the public HTTPS URL after the first deployment and smoke test.
+The zero-cost production configuration is ready for one Render Free web service, Neon Free PostgreSQL, and cron-job.org, but this workspace is not connected to those accounts, so no public deployment has been created yet. See [DEPLOYMENT.md](DEPLOYMENT.md) for the exact runbook. Replace this section with the public HTTPS URL after the first deployment and smoke test.
 
 ## What is implemented
 
@@ -26,7 +26,7 @@ The production configuration is ready for Render, but this workspace is not conn
 - Backend: Node.js 20+, Express 5, Sequelize, and PostgreSQL
 - Authentication: bcrypt password hashes and signed JWTs in HTTP-only cookies
 - Email: Nodemailer over SMTP
-- Production: Render web service, Render Postgres, persistent disk, and Render Cron Job
+- Production: one Render Free web service, Neon Free PostgreSQL, and a free external HTTP scheduler
 
 ## Repository layout
 
@@ -78,6 +78,7 @@ Fill the local values in `.env`. A normal Docker-based setup uses these categori
 | `DATABASE_SSL` | Use `false` for local PostgreSQL. External managed database URLs normally use `true` or `?sslmode=require`. |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT` | Values used by Docker Compose. Use a development-only password. |
 | `JWT_SECRET` | A long random value; generate one with `openssl rand -base64 48`. |
+| `CRON_SECRET` | A separate random secret protecting `/api/cron/run-reminders`; generate with `openssl rand -hex 32`. Required in production. |
 | `FRONTEND_URL` | Exact browser origin, normally `http://localhost:5173`; comma-separated origins are supported. |
 | `VITE_API_URL` | Normally `http://localhost:3000/api`. |
 | `JWT_EXPIRES_IN`, `BCRYPT_ROUNDS` | Normally `1h` and `12`. |
@@ -89,7 +90,7 @@ Fill the local values in `.env`. A normal Docker-based setup uses these categori
 
 For email reminders, set `EMAIL_PROVIDER=smtp`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_SECURE`. Set `SMTP_USER` and `SMTP_PASSWORD` together when authentication is required. `SMTP_CONNECTION_TIMEOUT_MS` defaults to `10000`. `SENDGRID_API_KEY` is reserved but not used by the implemented SMTP transport.
 
-For local scheduling, set `REMINDER_JOB_ENABLED=true` to run the lightweight interval scheduler with the API. `REMINDER_JOB_INTERVAL_MS` defaults to one day, and `REMINDER_RUN_ON_STARTUP` controls an immediate run. Leave these disabled when using an external scheduler.
+For local scheduling, set `REMINDER_JOB_ENABLED=true` to run the lightweight interval scheduler with the API. `REMINDER_JOB_INTERVAL_MS` defaults to one day, and `REMINDER_RUN_ON_STARTUP` controls an immediate run. Production keeps this daily interval as a fallback and uses a free external pinger as the primary trigger because Render Free sleeps when idle.
 
 ### 3. Start PostgreSQL
 
@@ -134,6 +135,7 @@ NODE_ENV=production \
 DATABASE_SSL=false \
 COOKIE_SECURE=false \
 SERVE_FRONTEND=true \
+CRON_SECRET=a-local-only-secret-containing-at-least-32-characters \
 npm start --prefix backend
 ```
 
@@ -148,6 +150,7 @@ NODE_ENV=test \
 DATABASE_URL=postgresql://USER:PASSWORD@127.0.0.1:PORT/svt_test \
 DATABASE_SSL=false \
 JWT_SECRET=a-dedicated-test-secret-at-least-32-characters \
+CRON_SECRET=a-dedicated-cron-test-secret-at-least-32-characters \
 FRONTEND_URL=http://127.0.0.1:4173 \
 COOKIE_SECURE=false \
 npm test
@@ -173,17 +176,19 @@ npm run verify:admin-ui
 npm run verify:responsive-ui
 ```
 
-The Task 7 release pass completed 41/41 backend integration tests, all seven rendered browser workflows, both mobile and desktop page sweeps, a fresh frontend build, and zero-vulnerability npm audits. See [TESTING_NOTES.md](TESTING_NOTES.md) for the test matrix and fixes made during that pass.
+The Task 7 release pass completed 41/41 backend integration tests, all seven rendered browser workflows, both mobile and desktop page sweeps, a fresh frontend build, and zero-vulnerability npm audits. Task 9 expands the suite to 44/44 tests, including external-trigger authorization, SMTP deduplication, and Neon-style TLS configuration. See [TESTING_NOTES.md](TESTING_NOTES.md) for the original full-app test matrix.
 
 ## Reminder operations
 
-Run the same one-shot command used by the production Cron Job:
+Run the same one-shot reminder logic manually:
 
 ```bash
 npm run reminders:run
 ```
 
 The job reads each user’s active thresholds, logs sent or failed attempts in `notifications`, and relies on a unique reminder/expiry occurrence to avoid duplicate sends. A failed occurrence is eligible for retry; a sent occurrence is not sent again.
+
+Production also exposes `GET /api/cron/run-reminders`. It requires the `X-Cron-Secret` header to match `CRON_SECRET`, returns `202` immediately, and starts the same job asynchronously. Missing or wrong secrets return `401`. The in-process interval and HTTP route share a single-flight runner, while database deduplication makes repeat pings safe.
 
 ## Security notes
 
@@ -192,7 +197,8 @@ The job reads each user’s active thresholds, logs sent or failed attempts in `
 - Ownership is included in document, trip, reminder, notification, and file queries.
 - Uploads use random storage names, private permissions, byte-signature/type/size checks, and authenticated retrieval. The storage directory is not statically served.
 - Production CORS allows only the configured application origin; `*` is never used with credentials.
-- The production database uses Render’s internal URL and blocks external access by default.
+- The production database is Neon and is configured only through `DATABASE_URL`; TLS is required through `sslmode=require`/`DATABASE_SSL=true`.
+- The external reminder endpoint compares a high-entropy header secret and never accepts an unauthenticated public trigger.
 - Admin statistics expose aggregate/operational metadata, not passport numbers, visa IDs, upload names/references, or file bytes.
 - `.env` and all `.env.*` files are ignored except `.env.example`. Real secrets belong only in local untracked files or deployment-platform settings.
 
@@ -204,7 +210,10 @@ The job reads each user’s active thresholds, logs sent or failed attempts in `
 - No airline booking integration
 - No live compliance or destination-requirement verification
 - Destination checklist entries are a small seeded reference set, not authoritative advice
-- Uploaded files use one Render persistent disk, so the web service is intentionally single-instance until storage is moved to a private object store
+- The zero-cost Render filesystem is ephemeral: uploaded bytes disappear on sleep, restart, or deploy even though Neon retains their metadata. Durable uploads require private object storage.
+- Render Free sleeps after 15 idle minutes; reminder delivery depends primarily on the external pinger successfully waking and calling the service.
+- Render Free blocks SMTP ports 25/465/587; the configured provider must support an allowed alternative such as 2525.
+- Free-tier quotas and terms can change; this configuration is zero-cost only while usage stays within current Render, Neon, cron-job.org, and SMTP-provider allowances.
 - Schema setup is handled by additive application startup logic rather than a versioned migration framework
 
 See [PRD.md](PRD.md) for the complete feature, data model, architecture, security, and decision record.

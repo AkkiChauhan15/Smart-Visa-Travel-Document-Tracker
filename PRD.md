@@ -5,7 +5,7 @@
 - Product: Smart Visa & Travel Document Tracker
 - Version: Phase 1 release candidate
 - Last verified: 2026-08-13
-- Implementation status: Tasks 1–7 complete and locally release-tested; Render infrastructure is defined, but public provisioning requires repository and Render account access
+- Implementation status: Tasks 1–7 complete and locally release-tested; zero-cost Render/Neon/external-trigger infrastructure is defined, but public provisioning requires provider account access
 
 ## Product summary
 
@@ -48,6 +48,7 @@ Public registration always creates a `user`. Admin role assignment is an operato
 - Status is added to list/detail API representations. The frontend displays the returned status and does not recompute it.
 - Default reminder rows are 90/60/30 days. A user can enable, disable, replace, or add thresholds per document.
 - A one-shot reminder job finds currently due occurrences, sends through SMTP, and records sent/failed metadata.
+- The same job is triggered by a daily in-process fallback or the secret-protected `/api/cron/run-reminders` endpoint. The HTTP path acknowledges with 202 before email work completes.
 - A database uniqueness constraint on reminder plus current expiry date claims each occurrence and prevents duplicate successful sends. Failed occurrences can be retried.
 - Notification History shows the user their own delivery outcomes.
 
@@ -96,15 +97,14 @@ Browser / React
       | same-origin HTTPS, JSON or multipart, HTTP-only cookie
       v
 Express routes -> validation -> auth/role middleware -> services
-      |                                              | \
-      |                                              |  -> private upload disk
-      v                                              v
-Sequelize --------------------------------------> PostgreSQL
-      ^
-      |
-Render Cron Job -> reminder service -> SMTP provider -> recipient mailbox
-                         |
-                         -> Notification delivery record
+      |                    |                         | \
+      |                    |                         |  -> ephemeral /tmp uploads
+      v                    v                         v
+Sequelize ----------> Neon PostgreSQL       reminder job -> SMTP -> mailbox
+                            ^                    |
+                            |                    -> Notification record
+cron-job.org -> secret-protected HTTP trigger   
+awake process -> daily interval fallback --------^
 ```
 
 Frontend concerns are split into route pages, reusable fields/dialogs/status components, authentication context/guards, and focused API modules. Backend concerns are split into routes/controllers, validation, authentication/error/upload middleware, domain services, models, shared status utilities, and scheduler/job entry points.
@@ -123,14 +123,15 @@ Locally, Vite and Express run independently on separate ports with an exact CORS
 - Admin aggregation selects only required metadata fields and intentionally omits raw document/file content
 - Disabled-account checks on existing sessions and new logins
 - Environment-only secrets, ignored `.env*`, values-only production platform configuration, and a blank `.env.example`
-- Production Postgres private URL and disabled external IP access
+- A high-entropy `X-Cron-Secret` check using constant-time digest comparison; production refuses a cron secret shorter than 32 characters
+- Neon PostgreSQL over TLS using an environment-only direct connection string with `sslmode=require`
 - Unique database indexes for reminder thresholds and notification occurrences
 
 ## Decisions and trade-offs
 
 ### PostgreSQL and Sequelize
 
-PostgreSQL was selected at project start and retained. Relational ownership and unique constraints fit the domain, JSONB accommodates checklist item arrays, and Sequelize keeps model validation close to the API. Startup uses additive/idempotent schema setup and `sequelize.sync()` without destructive force. This is practical for Phase 1, but versioned migrations should replace it before multiple production release tracks or complex migrations.
+PostgreSQL was selected at project start and retained. Relational ownership and unique constraints fit the domain, JSONB accommodates checklist item arrays, and Sequelize keeps model validation close to the API. Production uses Neon Free rather than expiring Render Postgres. `DATABASE_URL` remains provider-neutral; the direct Neon URL is used because startup performs additive/idempotent schema setup and `sequelize.sync()` without destructive force. This is practical for Phase 1, but versioned migrations should replace it before multiple production release tracks or complex migrations.
 
 ### Computed status
 
@@ -138,11 +139,13 @@ Status is not persisted. It is derived on reads using the current date and activ
 
 ### SMTP and scheduling
 
-Nodemailer SMTP works with multiple providers without provider-specific application code. Local development can use an in-process interval, but production uses a single daily Render Cron Job and disables the interval. This avoids duplicate scheduler instances during deploys/scaling and produces visible run history. Failed delivery is logged and retriable rather than crashing the whole batch.
+Nodemailer SMTP works with multiple providers without provider-specific application code. Production has no paid Render Cron Job. A daily cron-job.org request wakes the free web service and sends `X-Cron-Secret` to an endpoint that starts the existing reminder job asynchronously. A daily in-process interval is retained as a best-effort fallback while the process is awake. Both enter a process-wide single-flight runner, and the existing unique Notification occurrence supplies cross-call deduplication. Failed delivery remains logged and retriable rather than crashing the batch.
+
+Render Free blocks SMTP ports 25, 465, and 587, so this architecture requires a provider offering an allowed alternative such as 2525. The endpoint returns quickly after a cold start reaches Express, but delivery still depends on cron-job.org firing and the sleeping service/database waking successfully.
 
 ### Private local disk
 
-The implemented upload service uses private disk because Phase 1 called for local disk or a bucket. Render persistence makes this deployable with minimal change, but it limits the web service to one instance and requires file backups separate from database backups. A private object store with signed/service-mediated retrieval is the scale-out path.
+The implemented upload service uses private local disk because Phase 1 allowed local disk or a bucket. Render Free cannot attach persistent disks, so the Blueprint uses private `/tmp` storage. Ownership/type/signature protections still apply while the process is alive, but bytes are lost on sleep, restart, or deploy; Neon retains only metadata. This is acceptable only for a hobby/demo free-tier deployment. A private object store with service-mediated retrieval is required for durable production uploads and remains outside this deployment-only task.
 
 ### Same-origin production package
 
@@ -165,11 +168,14 @@ Task 7 found coverage gaps rather than product feature defects. It added:
 
 Final evidence was 41/41 integration tests, seven rendered browser workflows, clean desktop/mobile layout checks, a 68-module production frontend build, backend syntax checks, zero known npm vulnerabilities, and no frontend secret findings. Detailed evidence and fixed test gaps are in `TESTING_NOTES.md`.
 
-Task 8 additionally corrected a deployment-specific database decision: production no longer forces TLS solely because `NODE_ENV=production`. `DATABASE_SSL` is explicit or inferred from `sslmode`, allowing Render’s private internal PostgreSQL URL to connect without TLS while external managed URLs can require it.
+Task 8 corrected a deployment-specific database decision: production no longer forces TLS solely because `NODE_ENV=production`. Task 9 uses that provider-neutral behavior with Neon’s `sslmode=require` URL plus `DATABASE_SSL=true`; Sequelize/node-postgres need no additional Neon dependency.
+
+Task 9 added integration coverage proving the external trigger rejects missing/wrong secrets and that two authorized calls produce only one SMTP message/Notification occurrence. The trigger and in-process interval reuse the original Task 3 job rather than duplicating reminder logic.
 
 ## Operations
 
 - Health: `GET /api/health`
+- External reminder trigger: `GET /api/cron/run-reminders` with `X-Cron-Secret` (202 accepted; 401 on missing/wrong secret)
 - Manual reminder execution: `npm run reminders:run`
 - Admin role assignment: `npm run users:set-role -- <email> <user|admin>`
 - Logs: Express startup/shutdown, job summaries, and notification-specific delivery failures (without secrets or plaintext passwords)
@@ -192,8 +198,10 @@ The following are explicitly not implemented, scaffolded, or implied:
 Operational limitations:
 
 - Static checklists cover only five example destinations.
-- Email delivery depends on an external SMTP account and its reputation/limits.
-- One local persistent disk prevents horizontal web-service scaling.
-- Database and disk need separate backup/restore procedures.
+- Email delivery depends on an external SMTP account and its reputation/limits; Render Free requires a non-blocked alternative port such as 2525.
+- Render Free sleeps after 15 idle minutes. The in-process interval cannot run while asleep, and the daily reminder check depends on the external pinger waking/calling the app.
+- Render Free storage is ephemeral. Uploaded file bytes disappear after sleep/restart/deploy; metadata in Neon does not restore them.
+- Neon Free and Render Free have usage/storage/compute limits even though they have no configured paid resource in this Blueprint.
+- Neon database recovery and ephemeral file handling are separate concerns; lost ephemeral files are unrecoverable.
 - Additive startup schema management is not a substitute for long-term versioned migrations.
 - The public Render deployment and real provider smoke test cannot be completed until a repository and Render credentials are provided to the deployment operator.

@@ -1,177 +1,201 @@
-# Render Deployment Runbook
+# Zero-Cost Render + Neon Deployment Runbook
 
-This runbook deploys the implemented application as one public Render web service, one managed PostgreSQL database, one private persistent disk, and one daily Render Cron Job. The React and Express projects remain independent locally; the production build serves React through Express so authentication and API traffic share one HTTPS origin.
+This setup is designed to remain within the documented free tiers for a hobby/demo deployment:
 
-## Why Render
+- one Render Free web service for Express and the compiled React app;
+- one Neon Free PostgreSQL project for durable relational data; and
+- one free cron-job.org schedule that calls a secret-protected HTTP trigger.
 
-The backend is a persistent Express process and supporting-document uploads currently use private local disk. Render supports that process model, a paid persistent disk, managed PostgreSQL, platform-held secrets, and a first-party cron service without changing the application’s storage or scheduler design.
+There is no Render Cron Job, Render database, or persistent Render disk in `render.yaml`. Always review the providers’ current quotas and pricing before creating resources; free-tier terms can change.
 
-The deployment cannot use a free web instance: persistent disks and cron jobs require paid services. Review current Render and SMTP-provider pricing before provisioning.
+## Architecture and trade-offs
 
-## Production resources
+The public web service serves React and `/api` under one HTTPS origin. It connects to Neon using `DATABASE_URL`. Reminder checks share one implementation and can start from either:
 
-`render.yaml` defines:
+- the daily in-process interval while the Render process happens to be awake; or
+- `GET /api/cron/run-reminders`, called by cron-job.org with `X-Cron-Secret`.
 
-- `smart-visa-tracker-web`: Node web service that builds both apps, serves React and `/api`, and mounts `/var/data`
-- `smart-visa-tracker-db`: private Render Postgres instance in the same Singapore region
-- `smart-visa-tracker-reminders`: daily one-shot reminder job at `02:00 UTC` (`07:30` India Standard Time)
+The HTTP endpoint returns `202 Accepted` as soon as it starts the check. Email delivery continues asynchronously. A process-wide single-flight runner prevents overlapping timer/HTTP runs, and the existing database notification-occurrence constraint prevents duplicate successful sends if the endpoint is called again.
 
-The database’s external IP allowlist is empty. Both Node services receive its internal connection string through a Blueprint reference. `DATABASE_SSL=false` is deliberate for that private-network URL; external Render database URLs require TLS.
+The zero-cost trade-offs are material:
+
+- Render Free spins down after 15 minutes without inbound traffic. A cold request can take about a minute, and the in-process timer does not run while the service is asleep.
+- The external pinger is therefore the primary reminder trigger. If it does not execute or cannot wake the service, that day’s check can be missed.
+- Render Free has an ephemeral filesystem and cannot attach a persistent disk. Uploaded file bytes under `/tmp/svt-uploads` disappear after a spin-down, restart, or deploy. Their PostgreSQL metadata remains, but the file can no longer be downloaded. Durable production uploads require private object storage, which is outside this deployment-only task.
+- Render Free blocks outbound SMTP ports 25, 465, and 587. Use an SMTP provider that supports an allowed alternative submission port such as 2525, and confirm that port is available on the provider’s current plan.
+- Render and Neon both enforce monthly free quotas. Exceeding them can suspend service or require an upgrade.
 
 ## Prerequisites
 
 - A GitHub, GitLab, or Bitbucket repository containing this project
-- A Render account allowed to access that repository
-- Billing enabled for a Starter web service, Starter Cron Job, Basic PostgreSQL, and 1 GB disk
-- Working SMTP credentials and a verified sender address
-- A clean secret scan and green build/tests
+- Free Render, Neon, and cron-job.org accounts
+- An SMTP account with a verified sender and an alternative port accepted by Render Free
+- Green local tests/build and a clean secret scan
 
-Do not upload or commit `.env`. Confirm it is ignored before the first push.
+Never commit `.env`, a Neon URL, `CRON_SECRET`, SMTP credentials, or JWT secrets.
 
-## First deployment
+## 1. Create the Neon database
 
-### 1. Put the project in a private Git repository
+1. Sign in to Neon and create a Free project in a region close to the Render service when possible. Unlike Render’s former 30-day free database, Neon’s current Free plan has no time limit, subject to its storage/compute quotas.
+2. Open the project’s **Connect** dialog.
+3. Select the direct connection, not the `-pooler` hostname. The application performs Sequelize schema setup during startup, for which Neon recommends a direct connection.
+4. Copy the full connection string. Its shape is:
 
-If this copy is not yet a Git repository:
+```text
+postgresql://ROLE:PASSWORD@ep-example.REGION.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+```
+
+5. Keep it in a password manager until entering it into Render. Do not add it to any tracked file.
+
+The application already reads the database exclusively from `DATABASE_URL`. `sslmode=require` is detected, and `DATABASE_SSL=true` in the Blueprint explicitly enables TLS for Sequelize/node-postgres. No Neon-specific package is required.
+
+## 2. Prepare deployment secrets
+
+Generate independent high-entropy values:
+
+```bash
+openssl rand -base64 48  # JWT_SECRET, if not using Render generation
+openssl rand -hex 32     # CRON_SECRET
+```
+
+Render generates `JWT_SECRET` from the Blueprint. Store `CRON_SECRET` securely; the exact same value will be entered in Render and the cron-job.org request header.
+
+## 3. Push a private Git repository
+
+If this directory is not yet a Git repository:
 
 ```bash
 git init
 git add .
 git status --short
-git commit -m "Prepare Smart Visa Tracker deployment"
+git commit -m "Prepare free-tier deployment"
 git branch -M main
 git remote add origin <repository-url>
 git push -u origin main
 ```
 
-Before `git add`, verify `.env` does not appear in `git status --short`. The repository must include `render.yaml`, `.env.example`, `README.md`, `PRD.md`, and this runbook.
+Before committing, confirm `.env` is absent from `git status --short`. The tracked deployment files should include `render.yaml`, `.env.example`, `README.md`, `PRD.md`, and this runbook.
 
-### 2. Create a Render Blueprint
+## 4. Deploy the Render Blueprint
 
-1. Sign in to Render and choose **New > Blueprint**.
-2. Connect the repository and select the branch containing `render.yaml`.
-3. Keep the Blueprint file path as `render.yaml`.
-4. Review the paid resource plans and Singapore region before approving creation.
-5. Enter the prompted SMTP variables. For the common submission ports, use `SMTP_PORT=587` with `SMTP_SECURE=false`, or `SMTP_PORT=465` with `SMTP_SECURE=true`. Use the exact settings from the provider.
+1. In Render, choose **New > Blueprint** and connect the repository.
+2. Select the deployment branch and root `render.yaml`.
+3. Confirm the Blueprint proposes exactly one `web` service on plan `free`. It must not propose a Cron Job, PostgreSQL resource, or disk.
+4. Enter prompted values directly in Render:
 
-`JWT_SECRET` values are generated by Render and `DATABASE_URL` is injected from Render Postgres. Never copy either into source control.
+| Variable | Production value |
+| --- | --- |
+| `DATABASE_URL` | The complete direct Neon connection string. |
+| `CRON_SECRET` | The generated 64-character hexadecimal secret. |
+| `EMAIL_FROM` | A sender verified by the SMTP provider. |
+| `SMTP_HOST` | Provider SMTP hostname. |
+| `SMTP_PORT` | An allowed alternative such as `2525`; not 25/465/587 on Render Free. |
+| `SMTP_SECURE` | Normally `false` for STARTTLS on 2525; follow provider documentation. |
+| `SMTP_USER`, `SMTP_PASSWORD` | SMTP credentials, entered only in Render. |
 
-### 3. Verify environment configuration
+5. Create the service and wait for its health check to pass.
 
-For the web service, verify:
+The Blueprint supplies `DATABASE_SSL=true`, `COOKIE_SECURE=true`, `SERVE_FRONTEND=true`, a daily in-process interval, and ephemeral `UPLOAD_DIR=/tmp/svt-uploads`. Render supplies `RENDER_EXTERNAL_URL`; the backend uses it as the exact credentialed CORS origin when `FRONTEND_URL` is absent.
 
-- `NODE_ENV=production`
-- `DATABASE_URL` references `smart-visa-tracker-db`’s internal URL
-- `DATABASE_SSL=false`
-- `COOKIE_SECURE=true`
-- `SERVE_FRONTEND=true`
-- `UPLOAD_DIR=/var/data/uploads`
-- `REMINDER_JOB_ENABLED=false`
-- `/var/data` has the `private-uploads` persistent disk
+## 5. Confirm the web service
 
-Render supplies `RENDER_EXTERNAL_URL`; the backend uses it as the exact CORS origin when `FRONTEND_URL` is absent. The compiled frontend defaults to the same-origin `/api`, so no public backend URL is embedded in JavaScript.
-
-For the Cron Job, verify the same internal `DATABASE_URL`, all SMTP variables, and `REMINDER_JOB_ENABLED=false`. The scheduled command is `npm run reminders:run --prefix backend`, not the long-running API scheduler. This ensures one scheduler owns reminder delivery.
-
-If Render changes the web service name or hostname, update the Cron Job’s non-secret `FRONTEND_URL` value to the actual public HTTPS URL. That value is used by shared configuration validation; reminder emails do not construct compliance claims from it.
-
-### 4. Confirm the initial deploy
-
-Wait for the database, web service, and Cron Job builds to finish. In the web logs, confirm database connection/schema setup, destination checklist seeding, and `API listening on port ...` without repeated restarts.
-
-Check:
+Replace `<web-host>` with the assigned hostname:
 
 ```bash
 curl --fail --show-error https://<web-host>/api/health
 curl --fail --show-error https://<web-host>/login
+curl --output /dev/null --write-out '%{http_code}\n' https://<web-host>/storage/guess.pdf
 ```
 
-The health response must be `{"status":"ok"}` and `/login` must return the React application over HTTPS. A guessed path such as `/storage/example.pdf` must return 404.
+Expected results are `{"status":"ok"}`, the React HTML shell, and `404`. In Render logs, confirm database authentication/schema setup and `API listening on port ...` without repeated restarts.
 
-### 5. Bootstrap an administrator
+## 6. Configure cron-job.org
 
-1. Register a normal account through the live UI.
-2. Open the web service’s Render Shell.
-3. Run:
+Create a cron job with:
+
+| Setting | Value |
+| --- | --- |
+| URL | `https://<web-host>/api/cron/run-reminders` |
+| Method | `GET` |
+| Header | `X-Cron-Secret: <the exact CRON_SECRET stored in Render>` |
+| Schedule | Daily at the desired UTC time |
+| Request timeout | Use the maximum available, ideally 300 seconds, to allow for a Render/Neon cold start |
+| Failure notification | Enabled |
+
+Use a request header, not `?secret=...`, so the secret is not placed in URL/access logs. cron-job.org supports custom request headers.
+
+For cold-start resilience, schedule a second call five minutes after the primary call (for example, 02:00 and 02:05 UTC). This is not a keep-awake scheme; it is one bounded retry. Duplicate calls are safe because a sent reminder/expiry occurrence cannot be claimed twice.
+
+Test authentication before enabling the schedule:
+
+```bash
+# Must return 401
+curl --output /dev/null --write-out '%{http_code}\n' \
+  https://<web-host>/api/cron/run-reminders
+
+# Must return 202; substitute the secret locally without saving it in shell history
+curl --request GET \
+  --header "X-Cron-Secret: $CRON_SECRET" \
+  https://<web-host>/api/cron/run-reminders
+```
+
+A successful response is `202` with `status: "accepted"`. `started: false` means another timer or HTTP trigger is already running; it is still a successful/safe request.
+
+## 7. Verify reminders and deduplication
+
+1. Create a document with an enabled threshold that is currently due.
+2. Manually execute the cron-job.org job.
+3. Confirm Render logs show `Reminder job (external-http-trigger) finished`.
+4. Confirm the real mailbox receives one message and Notification History shows `sent`.
+5. Execute it again immediately. Confirm no second email appears and only one Notification occurrence exists for that reminder/current expiry.
+6. Observe the first automatic daily run in cron-job.org history and Render logs. Do not assume configuration is correct until this occurs.
+
+To test failure handling, temporarily apply a controlled invalid SMTP credential, create a new due occurrence, trigger once, and confirm Notification History records `failed` without crashing the web process. Restore valid SMTP configuration immediately and retry.
+
+## 8. Bootstrap an administrator
+
+Render Free does not provide a service shell. Register the account normally, then run the operator CLI locally while your untracked `.env` temporarily points to the production Neon database:
 
 ```bash
 npm run users:set-role -- admin@example.com admin
 ```
 
-4. Log out and log back in through the UI.
-5. Confirm the Admin navigation appears and the panel loads only aggregate/operational information.
-
-Do not add a public admin-registration route or manually paste password hashes.
+Keep the Neon URL only in the ignored `.env`, restore your development URL afterward, and never run tests against Neon production. Log out and back in after the role change.
 
 ## Production smoke test
 
-Use unique test addresses and remove nonessential smoke-test records afterward through the UI.
+1. Register and log in from a clean browser profile; verify invalid credentials and logout.
+2. Add Passport, Visa, and TravelDocument records and reconcile the dashboard counts.
+3. Upload/download a small genuine PDF/JPG/PNG while the instance is awake; verify signed-out and second-user requests are denied.
+4. Recognize that the uploaded bytes will be lost on the next Render spin-down/restart/deploy. Do not use this tier for durable document storage.
+5. Add a trip linked to the account’s own Visa and verify Dashboard/Travel History.
+6. Customize a reminder and perform the external-trigger checks above.
+7. Confirm the destination disclaimer is visible.
+8. Confirm a normal user receives 403 from admin APIs and an admin sees aggregate data without raw document contents.
+9. Record the final HTTPS URL and smoke-test date in `README.md`.
 
-1. Open the public URL in a clean browser profile.
-2. Register a user and confirm the dashboard empty state.
-3. Log out; confirm invalid credentials fail and the valid account can log in again.
-4. Add a passport, visa, and supporting document with a genuine small PDF/JPG/PNG.
-5. Refresh the dashboard and reconcile total/status counts with the Documents page.
-6. Download the uploaded file while signed in; confirm a signed-out request cannot retrieve it.
-7. Add a trip tied to the user’s own visa and confirm it appears under Travel History and recent trips.
-8. Change one reminder threshold and confirm it persists.
-9. View a destination checklist and confirm the static/non-live official-authority disclaimer is prominent.
-10. With a normal user, confirm `/admin` redirects and `/api/admin/statistics` returns 403.
-11. With the bootstrapped admin, confirm user and aggregate statistic views load and expose no raw passport/visa/file content.
+## Redeploy, rotate, and recover
 
-Record the final public URL and smoke-test date in `README.md`.
+- Push a tested commit; Render rebuilds the single web service. Check health, deep routes, database connection, and cron trigger afterward.
+- Sync `render.yaml` changes carefully and confirm only one free web service remains.
+- Rotating `JWT_SECRET` signs out every session.
+- Rotate `CRON_SECRET` in Render and cron-job.org together. During a mismatch, triggers return 401 and reminders do not run.
+- Disable the cron-job.org schedule while investigating repeated SMTP failures. The awake-process interval may still run; set `REMINDER_JOB_ENABLED=false` temporarily in Render if complete suspension is required.
+- Use Neon’s available restore/export features within the current plan. Integration tests must never target the production database.
+- Ephemeral uploads cannot be recovered after Render discards them. Database recovery does not restore file bytes.
 
-## Verify the scheduled email job
+## Handoff checklist
 
-Do not assume a local `setInterval` will run in production. This deployment deliberately uses Render Cron.
-
-1. Create a dated document and an enabled threshold that is currently due.
-2. In the Render Cron Job, choose **Trigger Run**.
-3. Confirm the job log prints a JSON summary with `sent: 1` (or the expected count).
-4. Confirm the real mailbox receives the message and Notification History shows `sent`.
-5. Trigger the job immediately again; the same reminder/expiry occurrence must be skipped rather than delivered twice.
-6. To test failure handling, temporarily point the Cron Job at a controlled invalid SMTP host or credential, create another due occurrence, and trigger it once. Confirm Notification History records `failed` and the process exits cleanly after logging the failure.
-7. Restore the valid SMTP setting immediately and trigger a retry. Never leave intentionally invalid credentials on the scheduled service.
-
-Render evaluates the `0 2 * * *` schedule in UTC. Review Cron Job run history after the first scheduled execution.
-
-## CORS, cookies, database, and file checks
-
-- The public browser and API share `RENDER_EXTERNAL_URL`; credentialed CORS is restricted to that exact origin.
-- The cookie is HTTP-only and Secure in production. Same-origin deployment avoids third-party-cookie dependencies.
-- PostgreSQL is a separate managed production instance. The Blueprint’s empty `ipAllowList` disables public database access.
-- Upload bytes live only under `/var/data/uploads`, which is outside the React static directory and is never exposed with `express.static`.
-- Keep the web service at one instance while using a single persistent disk. Move uploads to private object storage before horizontal scaling.
-
-## Redeploying
-
-1. Run tests, the frontend build, and secret scans locally.
-2. Commit only source/configuration changes and push the tracked deployment branch.
-3. Render deploys the web service from the new commit; confirm its health check before smoke-testing.
-4. Render builds Cron Job code independently from the same commit. Confirm its latest deploy matches the web service commit.
-5. For `render.yaml` changes, sync the Blueprint and review plan/disk/database impacts before applying them.
-
-Do not replace `JWT_SECRET` casually: rotating it signs out every active session. Do not change or remove the disk mount without first backing up uploaded files. PostgreSQL plan/storage downgrades and disk shrink operations may not be supported.
-
-## Rollback and recovery
-
-- Application: select a known-good deploy in the Render web service and redeploy it, then align the Cron Job to the same Git commit.
-- Email: disable the Cron Job schedule while diagnosing repeated provider failures; leave the web service’s in-process scheduler disabled.
-- Database: use Render backups/restore procedures appropriate to the selected database plan. Do not point integration tests at production.
-- Uploads: take disk snapshots/backups according to operational policy. Database backups do not include files stored on the persistent disk.
-
-## Deployment handoff checklist
-
-- [ ] Public HTTPS URL recorded in `README.md`
-- [ ] `/api/health` and React deep links reachable
-- [ ] Register/login/logout and invalid-login behavior smoke-tested
-- [ ] Production PostgreSQL receives new records
-- [ ] Upload/download and signed-out/other-user denial smoke-tested
-- [ ] Dashboard and travel-history changes refresh correctly
-- [ ] Normal user blocked from UI and API admin routes
-- [ ] Admin aggregates work without sensitive document leakage
-- [ ] Real SMTP email delivered and Notification row marked sent
-- [ ] Immediate second Cron run did not duplicate the email
-- [ ] Controlled failure recorded without crashing, then valid SMTP restored
-- [ ] First scheduled Cron execution observed
-- [ ] `.env` absent from Git and no secret appears in frontend assets or repository history
+- [ ] Blueprint shows one Free web service and no Cron/Render Postgres/disk resource
+- [ ] Neon direct URL stored only as Render `DATABASE_URL`; TLS connection succeeds
+- [ ] `CRON_SECRET` stored only in Render and cron-job.org header configuration
+- [ ] `/api/health`, React deep links, and expected private-path 404 work
+- [ ] Register/login/logout and production database writes work
+- [ ] Upload access controls work; ephemeral-loss limitation accepted
+- [ ] SMTP provider works through an allowed Render Free outbound port
+- [ ] Trigger without/wrong secret returns 401; correct secret returns 202
+- [ ] Two consecutive correct triggers deliver no duplicate notification
+- [ ] Automatic cron-job.org execution observed, including cold-start behavior
+- [ ] In-process fallback is enabled with a daily interval
+- [ ] Normal user/admin boundaries and aggregate disclosure checks pass
+- [ ] No `.env`, Neon URL, cron secret, SMTP password, or JWT secret is tracked
