@@ -1,0 +1,90 @@
+services:
+  - type: web
+    name: smart-visa-tracker-web
+    runtime: node
+    region: singapore
+    plan: starter
+    buildCommand: npm ci --prefix backend && npm ci --prefix frontend && npm run build --prefix frontend
+    startCommand: npm start --prefix backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: smart-visa-tracker-db
+          property: connectionString
+      - key: DATABASE_SSL
+        value: "false"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 1h
+      - key: BCRYPT_ROUNDS
+        value: "12"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: SERVE_FRONTEND
+        value: "true"
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: MAX_UPLOAD_BYTES
+        value: "5242880"
+      - key: REMINDER_JOB_ENABLED
+        value: "false"
+      - key: REMINDER_RUN_ON_STARTUP
+        value: "false"
+    disk:
+      name: private-uploads
+      mountPath: /var/data
+      sizeGB: 1
+
+  - type: cron
+    name: smart-visa-tracker-reminders
+    runtime: node
+    region: singapore
+    plan: starter
+    schedule: "0 2 * * *"
+    buildCommand: npm ci --prefix backend
+    startCommand: npm run reminders:run --prefix backend
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: smart-visa-tracker-db
+          property: connectionString
+      - key: DATABASE_SSL
+        value: "false"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: FRONTEND_URL
+        value: https://smart-visa-tracker-web.onrender.com
+      - key: BCRYPT_ROUNDS
+        value: "12"
+      - key: REMINDER_JOB_ENABLED
+        value: "false"
+      - key: EMAIL_PROVIDER
+        value: smtp
+      - key: EMAIL_FROM
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_CONNECTION_TIMEOUT_MS
+        value: "10000"
+
+databases:
+  - name: smart-visa-tracker-db
+    region: singapore
+    plan: basic-256mb
+    databaseName: smart_visa_tracker
+    user: smart_visa_tracker
+    ipAllowList: []

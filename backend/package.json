@@ -1,0 +1,46 @@
+{
+  "name": "smart-visa-tracker-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "verify:ui": "node scripts/verify-auth-ui.js",
+    "verify:documents-ui": "node scripts/verify-documents-ui.js",
+    "reminders:run": "node scripts/run-reminder-job.js",
+    "verify:reminders": "node scripts/verify-reminders.js",
+    "verify:travel-ui": "node scripts/verify-travel-ui.js",
+    "verify:dashboard-ui": "node scripts/verify-dashboard-ui.js",
+    "verify:admin-ui": "node scripts/verify-admin-ui.js",
+    "verify:responsive-ui": "node scripts/verify-responsive-ui.js",
+    "users:set-role": "node scripts/set-user-role.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.1",
+    "express-validator": "^7.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "nodemailer": "^9.0.5",
+    "pg": "^8.16.3",
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.7"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.4"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

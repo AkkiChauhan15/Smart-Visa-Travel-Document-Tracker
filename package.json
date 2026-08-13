@@ -1,0 +1,24 @@
+{
+  "name": "smart-visa-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix frontend",
+    "test": "npm test --prefix backend",
+    "verify:ui": "npm run verify:ui --prefix backend",
+    "verify:documents-ui": "npm run verify:documents-ui --prefix backend",
+    "verify:reminders": "npm run verify:reminders --prefix backend",
+    "verify:travel-ui": "npm run verify:travel-ui --prefix backend",
+    "verify:dashboard-ui": "npm run verify:dashboard-ui --prefix backend",
+    "verify:admin-ui": "npm run verify:admin-ui --prefix backend",
+    "verify:responsive-ui": "npm run verify:responsive-ui --prefix backend",
+    "reminders:run": "npm run reminders:run --prefix backend",
+    "users:set-role": "npm run users:set-role --prefix backend --"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
