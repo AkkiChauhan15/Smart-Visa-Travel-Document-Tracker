@@ -18,6 +18,11 @@ function parseBoolean(name, fallback = false) {
   return rawValue === 'true';
 }
 
+export function inferDatabaseSsl(databaseUrl) {
+  const sslMode = new URL(databaseUrl).searchParams.get('sslmode');
+  return Boolean(sslMode && sslMode !== 'disable');
+}
+
 export function validateEnvironment() {
   const missing = requiredVariables.filter((key) => !process.env[key]?.trim());
 
@@ -28,6 +33,10 @@ export function validateEnvironment() {
   const frontendUrl = process.env.FRONTEND_URL?.trim() || process.env.RENDER_EXTERNAL_URL?.trim();
   if (!frontendUrl) {
     throw new Error('Missing required environment variable: FRONTEND_URL');
+  }
+
+  if ((process.env.NODE_ENV ?? 'development') === 'production' && (process.env.CRON_SECRET?.trim().length ?? 0) < 32) {
+    throw new Error('CRON_SECRET must contain at least 32 characters in production');
   }
 
   ['DATABASE_SSL', 'COOKIE_SECURE', 'SERVE_FRONTEND', 'REMINDER_JOB_ENABLED', 'REMINDER_RUN_ON_STARTUP']
@@ -59,17 +68,17 @@ export function getConfig() {
 
   const databaseUrl = process.env.DATABASE_URL;
   const frontendUrl = process.env.FRONTEND_URL?.trim() || process.env.RENDER_EXTERNAL_URL.trim();
-  const sslMode = new URL(databaseUrl).searchParams.get('sslmode');
 
   return {
     nodeEnv: process.env.NODE_ENV ?? 'development',
     port,
     databaseUrl,
-    databaseSsl: parseBoolean('DATABASE_SSL', Boolean(sslMode && sslMode !== 'disable')),
+    databaseSsl: parseBoolean('DATABASE_SSL', inferDatabaseSsl(databaseUrl)),
     frontendOrigins: frontendUrl.split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
     jwtSecret: process.env.JWT_SECRET,
+    cronSecret: process.env.CRON_SECRET?.trim() || null,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '1h',
     bcryptRounds: Number.parseInt(process.env.BCRYPT_ROUNDS ?? '12', 10),
     cookieSecure: parseBoolean('COOKIE_SECURE'),

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import request from 'supertest';
 
+process.env.CRON_SECRET = 'system-boundary-cron-secret-with-32-characters';
+
 const { createApp } = await import('../src/app.js');
 const { getConfig } = await import('../src/config/env.js');
 const { sequelize } = await import('../src/models/index.js');
@@ -53,5 +55,17 @@ describe('whole-application route boundaries', () => {
     assert.equal(guessedFile.status, 404);
     assert.equal(health.status, 200);
     assert.deepEqual(health.body, { status: 'ok' });
+  });
+
+  it('rejects missing or incorrect external reminder trigger secrets', async () => {
+    const [missing, incorrect] = await Promise.all([
+      request(app).get('/api/cron/run-reminders'),
+      request(app).get('/api/cron/run-reminders').set('x-cron-secret', 'incorrect-secret'),
+    ]);
+
+    assert.equal(missing.status, 401);
+    assert.equal(incorrect.status, 401);
+    assert.equal(missing.body.error.message, 'Invalid reminder trigger credentials');
+    assert.equal(incorrect.body.error.message, 'Invalid reminder trigger credentials');
   });
 });

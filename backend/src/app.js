@@ -10,6 +10,7 @@ import { notFound } from './middleware/not-found.js';
 import authRoutes from './routes/auth-routes.js';
 import adminRoutes from './routes/admin-routes.js';
 import dashboardRoutes from './routes/dashboard-routes.js';
+import cronRoutes from './routes/cron-routes.js';
 import destinationChecklistRoutes from './routes/destination-checklist-routes.js';
 import notificationRoutes from './routes/notification-routes.js';
 import passportRoutes from './routes/passport-routes.js';
@@ -49,6 +50,7 @@ export function createApp() {
   });
 
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+  app.use('/api/cron', cronRoutes);
   app.use('/api/auth', authLimiter, authRoutes);
   app.use('/api/admin', adminRoutes);
   app.use('/api/dashboard', dashboardRoutes);

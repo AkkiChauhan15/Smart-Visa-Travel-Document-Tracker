@@ -3,11 +3,14 @@ import { randomBytes } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 import request from 'supertest';
 
+process.env.CRON_SECRET = 'reminder-integration-cron-secret-with-32-characters';
+
 const { createApp } = await import('../src/app.js');
 const { getConfig } = await import('../src/config/env.js');
 const { runReminderJob } = await import('../src/jobs/reminder-job.js');
 const { Notification, Reminder, sequelize } = await import('../src/models/index.js');
 const { calculateExpiryStatus } = await import('../src/utils/expiry-status.js');
+const { startSmtpCaptureServer } = await import('../scripts/smtp-capture-server.js');
 
 const config = getConfig();
 if (config.nodeEnv !== 'test' || !new URL(config.databaseUrl).pathname.toLowerCase().includes('test')) {
@@ -38,12 +41,20 @@ async function register(email) {
   return { cookie: getCookie(response), user: response.body.user };
 }
 
+async function waitFor(check, label, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
 describe('expiry status, reminder preferences, and notification job', () => {
   let owner;
   let otherUser;
   let soonPassport;
   let failurePassport;
-  const delivered = [];
 
   before(async () => {
     await sequelize.authenticate();
@@ -118,30 +129,43 @@ describe('expiry status, reminder preferences, and notification job', () => {
     assert.equal(record.body.passport.status, 'expiring-soon');
   });
 
-  it('uses the custom threshold, sends once, and logs successful delivery', async () => {
-    const emailService = {
-      async sendExpiryReminder(message) {
-        delivered.push(message);
-        return { messageId: `capture-${delivered.length}`, subject: 'Captured reminder' };
-      },
-    };
+  it('accepts the external trigger, sends once, and deduplicates a second call', async () => {
+    const smtp = await startSmtpCaptureServer();
+    process.env.EMAIL_PROVIDER = 'smtp';
+    process.env.EMAIL_FROM = 'reminders@example.test';
+    process.env.SMTP_HOST = smtp.host;
+    process.env.SMTP_PORT = String(smtp.port);
+    process.env.SMTP_SECURE = 'false';
+    process.env.SMTP_USER = '';
+    process.env.SMTP_PASSWORD = '';
 
-    const firstRun = await runReminderJob({ now: NOW, emailService, logger: { log() {}, error() {} } });
-    assert.equal(firstRun.sent, 1);
-    assert.equal(delivered.length, 1);
-    assert.equal(delivered[0].daysBefore, 25);
-    assert.match(delivered[0].documentLabel, /REM-SOON-01/);
+    try {
+      const first = await request(app)
+        .get('/api/cron/run-reminders')
+        .set('x-cron-secret', process.env.CRON_SECRET);
+      assert.equal(first.status, 202);
+      assert.equal(first.body.status, 'accepted');
+      assert.equal(first.body.started, true);
 
-    const sent = await Notification.findOne({ where: { ownerId: owner.user.id, sentStatus: 'sent' } });
-    assert.ok(sent);
-    assert.equal(sent.thresholdDays, 25);
-    assert.equal(sent.recipientEmail, owner.user.email);
-    assert.ok(sent.sentDate);
+      await waitFor(() => smtp.messages.length === 1, 'first SMTP delivery');
+      const sent = await Notification.findOne({ where: { ownerId: owner.user.id, sentStatus: 'sent' } });
+      assert.ok(sent);
+      assert.equal(sent.thresholdDays, 25);
+      assert.equal(sent.recipientEmail, owner.user.email);
+      assert.ok(sent.sentDate);
+      assert.match(smtp.messages[0], /REM-SOON-01/);
 
-    const secondRun = await runReminderJob({ now: NOW, emailService, logger: { log() {}, error() {} } });
-    assert.equal(secondRun.sent, 0);
-    assert.equal(delivered.length, 1);
-    assert.equal(await Notification.count({ where: { relatedReminderId: sent.relatedReminderId } }), 1);
+      const second = await request(app)
+        .get('/api/cron/run-reminders')
+        .set('x-cron-secret', process.env.CRON_SECRET);
+      assert.equal(second.status, 202);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      assert.equal(smtp.messages.length, 1);
+      assert.equal(await Notification.count({ where: { relatedReminderId: sent.relatedReminderId } }), 1);
+    } finally {
+      await smtp.close();
+    }
   });
 
   it('logs SMTP failure without throwing or stopping the job', async () => {

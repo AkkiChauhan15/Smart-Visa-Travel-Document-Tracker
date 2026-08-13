@@ -1,19 +1,10 @@
-import { runReminderJob } from './reminder-job.js';
+import { triggerReminderJob } from './reminder-job-runner.js';
 
 export function startReminderScheduler({ intervalMs, runOnStartup = false, logger = console }) {
-  let running = false;
-
   async function run() {
-    if (running) return;
-    running = true;
-    try {
-      const summary = await runReminderJob({ logger });
-      logger.log(`Reminder job finished: ${JSON.stringify(summary)}`);
-    } catch (error) {
-      logger.error(`Reminder job failed: ${error.message}`);
-    } finally {
-      running = false;
-    }
+    const trigger = triggerReminderJob({ source: 'in-process-scheduler', logger });
+    if (!trigger.started) logger.log('Reminder job is already running; scheduler trigger skipped');
+    return trigger.completion;
   }
 
   if (runOnStartup) void run();
@@ -22,4 +13,3 @@ export function startReminderScheduler({ intervalMs, runOnStartup = false, logge
 
   return { stop: () => clearInterval(timer), run };
 }
-
