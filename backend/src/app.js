@@ -22,6 +22,19 @@ import visaRoutes from './routes/visa-routes.js';
 
 const config = getConfig();
 
+const visaRequirementsWidgetPolicy = [
+  "default-src 'none'",
+  "base-uri 'none'",
+  "connect-src https://content11p.visahq.org",
+  "font-src 'none'",
+  "form-action 'none'",
+  `frame-ancestors ${config.frontendOrigins.join(' ')}`,
+  "img-src data:",
+  "object-src 'none'",
+  "script-src 'unsafe-inline' https://www.visahq.com",
+  "style-src 'unsafe-inline'",
+].join('; ');
+
 export function createApp() {
   const app = express();
 
@@ -65,7 +78,14 @@ export function createApp() {
   if (config.nodeEnv !== 'production') app.use('/api/test', testRoutes);
 
   if (config.serveFrontend) {
-    app.use(express.static(config.frontendDistDirectory, { index: 'index.html' }));
+    app.use(express.static(config.frontendDistDirectory, {
+      index: 'index.html',
+      setHeaders(res, filePath) {
+        if (path.basename(filePath) === 'visa-requirements-widget.html') {
+          res.setHeader('Content-Security-Policy', visaRequirementsWidgetPolicy);
+        }
+      },
+    }));
     app.use((req, res, next) => {
       const privatePathPrefixes = ['/storage', '/uploads', '/backend/storage'];
       if (

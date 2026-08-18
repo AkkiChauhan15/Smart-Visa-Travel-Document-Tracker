@@ -166,6 +166,11 @@ try {
         text: warning.innerText,
         destinations: document.querySelectorAll('#destination option').length,
         items: document.querySelectorAll('.checklist-items li').length,
+        widgetNotice: document.querySelector('.third-party-warning')?.innerText ?? '',
+        widgetFrame: (() => {
+          const frame = document.querySelector('.visahq-widget-frame');
+          return frame ? { src: frame.getAttribute('src'), sandbox: frame.getAttribute('sandbox') } : null;
+        })(),
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       };
     })()`,
@@ -175,6 +180,12 @@ try {
   assert.match(checklistState.text, /official government and immigration sources/i);
   assert.ok(checklistState.destinations >= 5);
   assert.ok(checklistState.items >= 4);
+  assert.match(checklistState.widgetNotice, /not a government authority/i);
+  assert.match(checklistState.widgetNotice, /does not submit or verify visa applications/i);
+  assert.deepEqual(checklistState.widgetFrame, {
+    src: '/visa-requirements-widget.html',
+    sandbox: 'allow-scripts allow-popups allow-popups-to-escape-sandbox',
+  });
   assert.equal(checklistState.overflow, false);
 
   await browser.client.send(

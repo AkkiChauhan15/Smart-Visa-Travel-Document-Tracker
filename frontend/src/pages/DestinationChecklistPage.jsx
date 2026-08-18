@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { listDestinationChecklists } from '../api/travel-api.js';
 import AppShell from '../components/AppShell.jsx';
 import SelectField from '../components/SelectField.jsx';
+import VisaRequirementsWidget from '../components/VisaRequirementsWidget.jsx';
 
 export default function DestinationChecklistPage() {
   const [checklists, setChecklists] = useState([]);
@@ -62,8 +63,8 @@ export default function DestinationChecklistPage() {
             </section>
           </div>
         )}
+        <VisaRequirementsWidget />
       </main>
     </AppShell>
   );
 }
-

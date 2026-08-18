@@ -218,6 +218,16 @@ button:disabled { opacity: 0.65; cursor: wait; }
 .checklist-items { list-style: none; padding: 0; margin: 0; }
 .checklist-items li { display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding: 16px 0; border-top: 1px solid #e6e5df; line-height: 1.55; color: #4f5b54; }
 .checklist-items li > span:first-child { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; background: #dceee3; color: #1d663e; font-size: .72rem; font-weight: 700; }
+.visa-requirements-section { margin-top: 34px; background: #fffefa; border: 1px solid #dedfd8; border-radius: 15px; padding: clamp(24px, 4vw, 38px); box-shadow: 0 12px 30px rgb(33 51 40 / 4%); }
+.visa-requirements-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+.visa-requirements-heading h2 { font-family: 'Manrope', sans-serif; font-size: clamp(1.7rem, 3vw, 2.35rem); letter-spacing: -.045em; margin: 0 0 8px; }
+.visa-requirements-heading p:not(.eyebrow) { color: #59645e; line-height: 1.55; margin: 0; }
+.visa-requirements-heading > a { flex: 0 0 auto; color: #1e5842; font-size: .82rem; font-weight: 700; }
+.third-party-warning { border-left: 4px solid #d69c45; background: #fff4de; color: #6c4813; padding: 18px 20px; margin-bottom: 24px; }
+.third-party-warning strong { display: block; font-family: 'Manrope', sans-serif; }
+.third-party-warning p { line-height: 1.55; margin: 7px 0 0; }
+.visahq-widget-frame-shell { overflow: hidden; border: 1px solid #dedfd8; border-radius: 10px; background: #fffefa; }
+.visahq-widget-frame { display: block; width: 100%; min-height: 620px; border: 0; background: #fffefa; }
 
 .dashboard-page { max-width: 1220px; }
 .dashboard-heading { margin-bottom: 30px; }
@@ -314,6 +324,7 @@ button:disabled { opacity: 0.65; cursor: wait; }
   .trip-date-block { grid-column: 1 / -1; max-width: 320px; }
   .checklist-layout { grid-template-columns: 1fr; }
   .destination-picker { position: static; }
+  .visa-requirements-heading { flex-direction: column; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-sections { grid-template-columns: 1fr; }
   .admin-compliance-panel { grid-template-columns: 1fr; }
@@ -333,6 +344,8 @@ button:disabled { opacity: 0.65; cursor: wait; }
   .add-threshold { align-items: flex-start; flex-direction: column; }
   .trip-card { grid-template-columns: 1fr; gap: 22px; }
   .trip-actions { justify-content: flex-end; }
+  .visa-requirements-section { padding: 18px; }
+  .visahq-widget-frame { min-height: 760px; }
   .compliance-banner { grid-template-columns: 1fr; }
   .metric-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
   .metric-card { min-height: 145px; padding: 17px; }
